@@ -1,0 +1,131 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Floris — Live Voice Agent</title>
+  <link rel="icon" href="/favicon.ico" />
+  <link rel="stylesheet" href="/styles.css" />
+</head>
+<body>
+  <div class="container">
+    <div class="header">
+      <div class="dot"></div>
+      <h1>Floris — Live Conversational Agent</h1>
+    </div>
+    <div class="card">
+      <div class="controls">
+        <button id="ptt" class="primary">🎙️ Hold to Talk</button>
+        <button id="stop" disabled>⏹ Stop</button>
+        <button id="clear">🧹 Clear</button>
+        <small class="hint">Say “search the web for …” to browse.</small>
+      </div>
+      <div id="wave" class="wave" hidden></div>
+      <div id="log" class="log"></div>
+      <audio id="player" crossorigin="anonymous"></audio>
+    </div>
+    <footer>
+      Keys are stored server-side in Netlify Environment Variables. No secrets in the browser.
+    </footer>
+  </div>
+
+<script>
+const logEl = document.getElementById('log');
+const pttBtn = document.getElementById('ptt');
+const stopBtn = document.getElementById('stop');
+const clearBtn = document.getElementById('clear');
+const waveEl = document.getElementById('wave');
+const player = document.getElementById('player');
+
+let mediaRecorder, chunks = [], isRecording=false;
+
+let history = [
+  { role: 'system', content: `You are Floris, a friendly, concise voice agent. If the user asks to "search" or "browse", call the web_search tool. Keep answers brief and helpful, then speak in a natural Dutch‑accented English.` }
+];
+
+function addMsg(role, text){
+  const row = document.createElement('div');
+  row.className='msg';
+  row.innerHTML = `<div class="role">${role}</div><div class="bubble">${text}</div>`;
+  logEl.appendChild(row); logEl.scrollTop = logEl.scrollHeight;
+}
+
+clearBtn.addEventListener('click', ()=>{ logEl.innerHTML=''; history = history.slice(0,1); });
+
+async function transcribeBase64(base64Audio, mime="audio/webm"){
+  const resp = await fetch('/api/stt', {
+    method:'POST',
+    headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({ audio: base64Audio, mime })
+  });
+  if(!resp.ok) throw new Error('STT failed: '+resp.status);
+  const data = await resp.json();
+  return data.text;
+}
+
+async function chat(messages){
+  const resp = await fetch('/api/chat', { 
+    method:'POST', headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({ messages })
+  });
+  if(!resp.ok) throw new Error('Chat failed: '+resp.status);
+  return resp.json();
+}
+
+async function speak(text){
+  const resp = await fetch('/api/tts', {
+    method:'POST', headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({ text })
+  });
+  if(!resp.ok) throw new Error('TTS failed: '+resp.status);
+  const buf = await resp.arrayBuffer();
+  const blob = new Blob([buf], { type: 'audio/mpeg' });
+  player.src = URL.createObjectURL(blob);
+  await player.play();
+}
+
+function startRecording(){
+  navigator.mediaDevices.getUserMedia({ audio: true }).then(stream => {
+    chunks = []; waveEl.hidden = false;
+    const mimeType = MediaRecorder.isTypeSupported('audio/webm;codecs=opus') ? 'audio/webm;codecs=opus' : 'audio/webm';
+    mediaRecorder = new MediaRecorder(stream, { mimeType });
+    mediaRecorder.ondataavailable = e => chunks.push(e.data);
+    mediaRecorder.onstop = async () => {
+      waveEl.hidden = true;
+      try{
+        const blob = new Blob(chunks, { type: mimeType });
+        const arr = await blob.arrayBuffer();
+        const base64 = btoa(String.fromCharCode(...new Uint8Array(arr)));
+        const text = await transcribeBase64(base64, mimeType);
+        addMsg('You', text);
+        history.push({ role: 'user', content: text });
+        const result = await chat(history);
+        const ai = result.reply;
+        history.push({ role: 'assistant', content: ai });
+        addMsg('Floris', ai);
+        await speak(ai);
+      } catch(err){
+        addMsg('Error', String(err));
+      }
+    };
+    mediaRecorder.start();
+  }).catch(err => addMsg('Error', 'Mic error: '+err));
+}
+
+function stopRecording(){
+  if(mediaRecorder && isRecording){
+    mediaRecorder.stop();
+    isRecording=false; pttBtn.disabled=false; stopBtn.disabled=true;
+  }
+}
+
+pttBtn.addEventListener('mousedown', ()=>{ if(isRecording) return; isRecording=true; pttBtn.disabled=true; stopBtn.disabled=false; startRecording(); });
+pttBtn.addEventListener('touchstart', (e)=>{ e.preventDefault(); if(isRecording) return; isRecording=true; pttBtn.disabled=true; stopBtn.disabled=false; startRecording(); });
+
+stopBtn.addEventListener('click', stopRecording);
+pttBtn.addEventListener('mouseup', stopRecording);
+pttBtn.addEventListener('mouseleave', ()=>{ if(isRecording) stopRecording(); });
+pttBtn.addEventListener('touchend', (e)=>{ e.preventDefault(); stopRecording(); });
+</script>
+</body>
+</html>
